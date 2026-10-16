@@ -62,7 +62,7 @@ jobs:
           # the plugin starts the Minecraft of the zJu4nn Hub (shared Prism, instance "CyberCraft")
           @(
             '[Minecraft]',
-            'bStartWithCyberpunk = 1',
+            'bStartWithCyberpunk = 0',  # the Hub starts Minecraft (Explorer couldn't open Prism, 16/10)
             'sLauncher = %LOCALAPPDATA%\zju4nn-hub\mashups\_minecraft\Prism\prismlauncher.exe',
             'sArguments = --launch CyberCraft'
           ) | Set-Content "$pl/CyberCraft.ini" -Encoding ascii
