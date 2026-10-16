@@ -1,0 +1,94 @@
+# Build used by the zJu4nn Hub "Mashups" tab.
+# Compiles BOTH halves from this fork's source: the RED4ext plugin (C++, Visual Studio 2022) and the Fabric mod
+# (Gradle on JDK 25). The Hub's package carries a CyberCraft.ini that points the plugin at the Hub's shared Prism
+# Launcher (%LOCALAPPDATA%\zju4nn-hub\mashups\_minecraft\Prism), so the player signs in to Minecraft once for every
+# mashup. RED4ext, redscript, ArchiveXL and Codeware are installed by the Hub from their own official releases.
+# Upstream: https://github.com/YoGoUrT20/cybercraft (MIT) — all credit to YoGoUrT20.
+name: build-hub
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag (e.g. hub-v0.2.6-1)"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "25"
+
+      - name: RED4ext plugin
+        working-directory: red4ext
+        run: |
+          cmake --preset default
+          cmake --build --preset release
+
+      - name: Fabric mod
+        shell: pwsh
+        run: |
+          $env:GRADLE_USER_HOME = Join-Path (Get-Location) '.tools\gradle-home'
+          .\fabric\gradlew.bat -p .\fabric --no-daemon --no-configuration-cache build -x test
+
+      - name: Package
+        shell: pwsh
+        run: |
+          $ver = (Select-String -Path red4ext/CMakeLists.txt -Pattern 'project\(CyberCraft VERSION ([0-9.]+)').Matches[0].Groups[1].Value
+          $modVer = (Select-String -Path fabric/gradle.properties -Pattern '^version=(.+)$').Matches[0].Groups[1].Value.Trim()
+          $dll = 'red4ext/build/RelWithDebInfo/CyberCraft.dll'
+          $jar = "fabric/build/libs/cybercraft-$modVer.jar"
+          foreach ($f in @($dll, $jar)) { if (-not (Test-Path $f)) { throw "missing $f" } }
+          $p = 'pkg'
+          $pl = "$p/red4ext/plugins/CyberCraft"
+          New-Item -ItemType Directory "$pl/scripts", "$p/archive/pc/mod", "$p/mods" -Force | Out-Null
+          Copy-Item $dll "$pl/CyberCraft.dll"
+          Copy-Item red4ext/scripts/CyberCraft.reds "$pl/scripts/CyberCraft.reds"
+          Copy-Item red4ext/scripts/CyberCraftModSettings.reds "$pl/scripts/CyberCraftModSettings.reds"
+          Copy-Item LICENSE "$pl/LICENSE.txt"
+          Copy-Item THIRD-PARTY-NOTICES.md "$pl/THIRD-PARTY-NOTICES.md"
+          Copy-Item red4ext/archive/CyberCraft.archive "$p/archive/pc/mod/CyberCraft.archive"
+          Copy-Item $jar "$p/mods/cybercraft-$modVer.jar"
+          # the plugin starts the Minecraft of the zJu4nn Hub (shared Prism, instance "CyberCraft")
+          @(
+            '[Minecraft]',
+            'bStartWithCyberpunk = 1',
+            'sLauncher = %LOCALAPPDATA%\zju4nn-hub\mashups\_minecraft\Prism\prismlauncher.exe',
+            'sArguments = --launch CyberCraft'
+          ) | Set-Content "$pl/CyberCraft.ini" -Encoding ascii
+          @(
+            "CyberCraft $ver (build do zJu4nn Hub)",
+            '',
+            'Cyberpunk 2077 jogado como um jogador de Minecraft. Original de YoGoUrT20',
+            '(github.com/YoGoUrT20/cybercraft). Licenca MIT.',
+            'Projeto de fas, sem ligacao com CD PROJEKT RED, Mojang ou Microsoft.'
+          ) | Set-Content "$p/LEIA.txt" -Encoding utf8
+          $base = (Resolve-Path $p).Path
+          $sums = Get-ChildItem $p -Recurse -File | ForEach-Object { "$((Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower())  $($_.FullName.Substring($base.Length + 1).Replace('\','/'))" }
+          $sums | Set-Content "$p/SHA256SUMS.txt" -Encoding ascii
+          $sums
+          # zip com barras normais (o Compress-Archive do Windows PowerShell grava "\")
+          Add-Type -AssemblyName System.IO.Compression, System.IO.Compression.FileSystem
+          $zip = "cybercraft-hub-$ver.zip"
+          $z = [System.IO.Compression.ZipFile]::Open((Join-Path (Get-Location) $zip), 'Create')
+          try { Get-ChildItem $p -Recurse -File | ForEach-Object { [System.IO.Compression.ZipFileExtensions]::CreateEntryFromFile($z, $_.FullName, $_.FullName.Substring($base.Length + 1).Replace('\','/'), 'Optimal') | Out-Null } } finally { $z.Dispose() }
+          "ZIP=$zip" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+          "VER=$ver" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+          Get-FileHash $zip -Algorithm SHA256 | Format-List
+
+      - name: Release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ inputs.tag }}" $env:ZIP --repo "${{ github.repository }}" --title "CyberCraft $env:VER (zJu4nn Hub)" --notes "Build of YoGoUrT20/cybercraft $env:VER for the zJu4nn Hub Mashups tab, plugin and Minecraft mod compiled from this fork at ${{ github.sha }}. MIT."
