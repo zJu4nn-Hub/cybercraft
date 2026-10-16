@@ -1,0 +1,64 @@
+# Repack used by the zJu4nn Hub: takes a release THIS fork already built (build-hub.yml), pinned by sha256, and only
+# rewrites CyberCraft.ini. No code changes — the plugin, scripts and mod inside are byte-for-byte the base release's.
+# Why (16/10/2026): with bStartWithCyberpunk = 1 the plugin asks Windows Explorer to open Prism (same launcher code as
+# SkyCraft), and on a player's PC Explorer answered "Windows can't find ...prismlauncher.exe" although the file was
+# there. The Hub now starts Minecraft itself before Cyberpunk and the plugin only links to it.
+name: repack-hub
+
+on:
+  workflow_dispatch:
+    inputs:
+      base:
+        description: "Release tag to repack (e.g. hub-v0.2.6-1)"
+        required: true
+      base_sha256:
+        description: "sha256 of the base release zip"
+        required: true
+      tag:
+        description: "New release tag (e.g. hub-v0.2.6-2)"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  repack:
+    runs-on: windows-latest
+    steps:
+      - name: Base release (pinned)
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download "${{ inputs.base }}" --repo "${{ github.repository }}" --pattern "*.zip" --dir base
+          $zip = Get-ChildItem base -Filter *.zip | Select-Object -First 1
+          $h = (Get-FileHash $zip.FullName -Algorithm SHA256).Hash.ToLower()
+          if ($h -ne "${{ inputs.base_sha256 }}") { throw "base zip sha256 mismatch: $h" }
+          Expand-Archive $zip.FullName pkg
+          "ZIPNAME=$($zip.Name)" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: CyberCraft.ini (Minecraft started by the Hub)
+        shell: pwsh
+        run: |
+          @(
+            '[Minecraft]',
+            'bStartWithCyberpunk = 0',
+            'sLauncher = %LOCALAPPDATA%\zju4nn-hub\mashups\_minecraft\Prism\prismlauncher.exe',
+            'sArguments = --launch CyberCraft'
+          ) | Set-Content pkg/red4ext/plugins/CyberCraft/CyberCraft.ini -Encoding ascii
+          Remove-Item pkg/SHA256SUMS.txt
+          $sums = Get-ChildItem pkg -Recurse -File | ForEach-Object {
+            $rel = $_.FullName.Substring((Resolve-Path pkg).Path.Length + 1).Replace('\','/')
+            "$((Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower())  $rel"
+          }
+          $sums | Set-Content pkg/SHA256SUMS.txt -Encoding ascii
+          $sums
+          Compress-Archive -Path "pkg/*" -DestinationPath $env:ZIPNAME
+          Get-FileHash $env:ZIPNAME -Algorithm SHA256 | Format-List
+
+      - name: Release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ inputs.tag }}" $env:ZIPNAME --repo "${{ github.repository }}" --target main --title "CyberCraft (zJu4nn Hub) — ${{ inputs.tag }}" --notes "Repack of ${{ inputs.base }} (sha256 ${{ inputs.base_sha256 }}): same plugin, scripts and mod; CyberCraft.ini now has bStartWithCyberpunk = 0 (the zJu4nn Hub starts Minecraft before Cyberpunk)."
